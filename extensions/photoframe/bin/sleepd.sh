@@ -1,0 +1,184 @@
+#!/bin/sh
+# Photo Frame, sleep-screen mode (default). Started detached by start.sh from the tmpfs copy.
+#
+# The Kindle UI (framework) keeps running. powerd does the sleeping, exactly like normal use:
+#   goingToScreenSaver  -> wait SS_DELAY s for the stock sleep screen, then draw a photo over it
+#   readyToSuspend      -> armer.sh sets "rtcWakeup" so powerd wakes the Kindle at the next tick
+#   wakeupFromSuspend/resuming while still on the sleep screen and the tick is due -> next photo
+#   outOfScreenSaver    -> the user pressed the power button: the stock UI repaints itself
+# Same events KOReader uses on Kindle (IntoSS/OutOfSS, ReadyToSuspend, WakeupFromSuspend).
+DIR="$(cd "$(dirname "$0")" && pwd)"
+PF_LOG_TO_RAM=1
+. "${DIR}/common.sh"
+trap '' HUP
+cd /
+
+echo $$ >"${PF_PIDFILE}"
+echo sleep >"${PF_MODEFILE}"
+log "==== photo frame start: sleep-screen mode (pid $$, $(interval_label), ${ORIENTATION} photos, battery display ${SHOW_BATTERY}, quiet $(quiet_window_label) TZ${TZ_OFFSET})"
+setup_fbink || log "WARNING: FBInk not found, falling back to eips (no dithering)"
+
+shown=0      # 1 = a photo is on the current sleep screen
+sessions=0   # sleep-screen sessions seen so far
+due=0        # epoch time of the next scheduled photo change
+echo 0 >"${PF_DUEFILE}"
+
+/bin/sh "${DIR}/armer.sh" </dev/null >/dev/null 2>&1 &
+echo $! >"${PF_ARMERPID}"
+
+cleanup() {
+	log "sleep-screen daemon exiting ($1)"
+	kill_pidfile "${PF_ARMERPID}"
+	kill_armer_monitor
+	restore_wifi_if_saved
+	rm -f "${PF_PIDFILE}" "${PF_MODEFILE}" "${PF_DUEFILE}" "${PF_AWAKEFILE}"
+	flush_log
+	exit 0
+}
+
+# Keep the current photo and schedule the RTC wake for the end of quiet hours (at most ~24h).
+hold_for_quiet() {
+	due="$(quiet_end_ts)"
+	echo "${due}" >"${PF_DUEFILE}"
+	log "quiet hours ($(quiet_window_label), local $(local_hm)): $1 until local $(local_hm "${due}") (${due})"
+}
+
+draw_photo() {
+	load_settings
+	if ! userstore_ok; then
+		log "userstore not available (USB?), photo not changed"
+		return 1
+	fi
+	# Low battery takes precedence over quiet hours: no further changes, no wake-up alarm.
+	if [ "${shown}" = "1" ] && battery_low; then
+		log "battery $(battery_pct)% <= ${LOW_BATTERY}%: keeping the current photo, awake $(awake_secs)s"
+		due=$(( $(date +%s) + 86400 * 365 ))
+		echo "${due}" >"${PF_DUEFILE}"
+		flush_log
+		return 1
+	fi
+	if in_quiet_hours; then
+		if [ "${shown}" = "1" ]; then
+			hold_for_quiet "keeping the current photo"
+			flush_log
+			nudge_ss_timeout
+			return 0
+		fi
+		# Entering the sleep screen at night: paint a photo (prefer the last one) but do not advance the bag.
+		img="$(current_image)"
+		if [ -z "${img}" ]; then
+			img="$(next_image)"
+		fi
+		if [ -z "${img}" ]; then
+			log "no ${ORIENTATION} photos to show"
+			say "$(no_photo_message)"
+		else
+			show_image "${img}"
+			log "quiet hours ($(quiet_window_label), local $(local_hm)): showing $(basename "${img}")  battery=$(battery_pct)%  charging=$(lipc-get-prop com.lab126.powerd isCharging 2>/dev/null)  awake=$(awake_secs)s"
+		fi
+		shown=1
+		hold_for_quiet "held"
+		flush_log
+		nudge_ss_timeout
+		return 0
+	fi
+	img="$(next_image)"
+	if [ -z "${img}" ]; then
+		log "no ${ORIENTATION} photos to show"
+		say "$(no_photo_message)"
+	else
+		show_image "${img}"
+		log "$1: showing $(basename "${img}")  battery=$(battery_pct)%  charging=$(lipc-get-prop com.lab126.powerd isCharging 2>/dev/null)  awake=$(awake_secs)s"
+	fi
+	shown=1
+	due="$(next_tick)"
+	echo "${due}" >"${PF_DUEFILE}"
+	flush_log
+	nudge_ss_timeout
+	return 0
+}
+
+is_sleep_state() {
+	case "$1" in
+		*creen*|*eady*|*uspend*) return 0 ;;
+	esac
+	return 1
+}
+
+# Put the Kindle to sleep now (same as one press of the power button; KOReader does the same).
+started="$(date +%s)"
+if ! is_sleep_state "$(powerd_state)"; then
+	( sleep 4; lipc-set-prop -i com.lab126.powerd powerButton 1 >/dev/null 2>&1 ) &
+fi
+
+fast=0
+while :; do
+	[ -f "${PF_STOPFILE}" ] && { rm -f "${PF_STOPFILE}"; cleanup "stop file"; }
+	t0="$(date +%s)"
+	# Also listen for suspending so the log records how long this cycle stayed awake.
+	ev="$(lipc-wait-event -s 30 com.lab126.powerd goingToScreenSaver,outOfScreenSaver,wakeupFromSuspend,resuming,suspending 2>/dev/null)"
+	t1="$(date +%s)"
+	# a lipc-wait-event that keeps returning at once (unsupported option, powerd gone) must not spin the CPU
+	if [ -z "${ev}" ] && [ $((t1 - t0)) -lt 2 ]; then
+		fast=$((fast + 1))
+		if [ "${fast}" -ge 5 ] && [ "${sessions}" = "0" ]; then
+			log "lipc-wait-event is not working; switching to takeover mode"
+			kill_pidfile "${PF_ARMERPID}"
+			kill_armer_monitor
+			flush_log
+			exec /bin/sh "${DIR}/loop.sh"
+		fi
+		sleep 5
+		continue
+	fi
+	fast=0
+	[ -n "${ev}" ] && log "event: ${ev} (state $(powerd_state))"
+	case "${ev}" in
+		goingToScreenSaver*)
+			mark_awake
+			save_wifi_and_off
+			sessions=$((sessions + 1))
+			sleep "${SS_DELAY}"
+			draw_photo "sleep screen"
+			continue
+			;;
+		outOfScreenSaver*)
+			shown=0
+			restore_wifi_if_saved
+			log "power button: back to the Kindle UI (photo frame stays armed for the next sleep)"
+			flush_log
+			continue
+			;;
+		suspending*)
+			log "suspending: awake $(awake_secs)s this cycle"
+			continue
+			;;
+		wakeupFromSuspend*)
+			mark_awake
+			save_wifi_and_off
+			;;
+	esac
+	st="$(powerd_state)"
+	now="$(date +%s)"
+	if is_sleep_state "${st}"; then
+		[ "${sessions}" = "0" ] && sessions=1
+		if [ "${shown}" = "0" ]; then
+			# missed the goingToScreenSaver event
+			sleep 1
+			draw_photo "sleep screen (late)"
+		elif [ "${now}" -ge $((due - 20)) ]; then
+			sleep 1
+			draw_photo "tick"
+		fi
+	else
+		shown=0
+		if [ "${sessions}" = "0" ] && [ $((now - started)) -ge 60 ]; then
+			# the Kindle never went to sleep after our power-button request: use the old takeover mode
+			log "sleep screen did not start (state '${st}'); switching to takeover mode"
+			kill_pidfile "${PF_ARMERPID}"
+			kill_armer_monitor
+			flush_log
+			exec /bin/sh "${DIR}/loop.sh"
+		fi
+	fi
+done

@@ -1,0 +1,28 @@
+# macOS / editor
+.DS_Store
+._*
+*~
+*.swp
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Runtime / personal
+*.log
+log.txt
+photoframe/log.txt
+photoframe/state/
+photoframe/STOP
+photoframe/images/*
+!photoframe/images/.gitkeep
+
+# Do not commit personal photos, backups, or device dumps
+backups/
+KindleBackup/
+*.bin
+*.tar
+incoming/

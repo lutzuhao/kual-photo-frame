@@ -1,0 +1,257 @@
+{
+	"items": [
+		{
+			"name": "Photo Frame",
+			"priority": 0,
+			"items": [
+		{
+			"name": "Start photo frame",
+			"priority": 1,
+			"action": "./bin/start.sh",
+			"exitmenu": true,
+			"status": false,
+			"internal": "status Starting photo frame . . ."
+		},
+		{
+			"name": "Stop photo frame",
+			"priority": 2,
+			"action": "./bin/stop.sh",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Photo frame stopped"
+		},
+		{
+			"name": "Change interval",
+			"priority": 3,
+			"items": [
+		{
+			"name": "* Every 15 min",
+			"priority": 1,
+			"action": "./bin/interval.sh",
+			"params": "15",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Interval: Every 15 min"
+		},
+		{
+			"name": "Every 30 min",
+			"priority": 2,
+			"action": "./bin/interval.sh",
+			"params": "30",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Interval: Every 30 min"
+		},
+		{
+			"name": "Every 1 hour",
+			"priority": 3,
+			"action": "./bin/interval.sh",
+			"params": "60",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Interval: Every 1 hour"
+		},
+		{
+			"name": "Every 6 hours",
+			"priority": 4,
+			"action": "./bin/interval.sh",
+			"params": "360",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Interval: Every 6 hours"
+		},
+		{
+			"name": "Every 12 hours",
+			"priority": 5,
+			"action": "./bin/interval.sh",
+			"params": "720",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Interval: Every 12 hours"
+		},
+		{
+			"name": "Every 24 hours",
+			"priority": 6,
+			"action": "./bin/interval.sh",
+			"params": "1440",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Interval: Every 24 hours"
+		}
+			]
+		},
+		{
+			"name": "Photo orientation",
+			"priority": 4,
+			"items": [
+		{
+			"name": "* All photos",
+			"priority": 1,
+			"action": "./bin/orientation.sh",
+			"params": "all",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Showing all photos"
+		},
+		{
+			"name": "Only vertical photos",
+			"priority": 2,
+			"action": "./bin/orientation.sh",
+			"params": "portrait",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Showing only vertical photos"
+		},
+		{
+			"name": "Only horizontal (rotated) photos",
+			"priority": 3,
+			"action": "./bin/orientation.sh",
+			"params": "landscape",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Showing only horizontal photos"
+		}
+			]
+		},
+		{
+			"name": "Exit style",
+			"priority": 5,
+			"items": [
+		{
+			"name": "* Quick exit: sleep-screen mode",
+			"priority": 1,
+			"action": "./bin/mode.sh",
+			"params": "sleep",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Exit style: quick (sleep screen)"
+		},
+		{
+			"name": "Full takeover: slow exit, restarts UI",
+			"priority": 2,
+			"action": "./bin/mode.sh",
+			"params": "takeover",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Exit style: full takeover"
+		}
+			]
+		},
+		{
+			"name": "Tap to toggle light",
+			"priority": 6,
+			"items": [
+		{
+			"name": "* Off: always sleep between photos",
+			"priority": 1,
+			"action": "./bin/taplight.sh",
+			"params": "0",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Tap light: off"
+		},
+		{
+			"name": "On while charging: stay awake, full takeover",
+			"priority": 2,
+			"action": "./bin/taplight.sh",
+			"params": "1",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Tap light: on while charging"
+		}
+			]
+		},
+		{
+			"name": "Battery display",
+			"priority": 7,
+			"items": [
+		{
+			"name": "* On: show percentage in the corner",
+			"priority": 1,
+			"action": "./bin/battery.sh",
+			"params": "1",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Battery display: on"
+		},
+		{
+			"name": "Off",
+			"priority": 2,
+			"action": "./bin/battery.sh",
+			"params": "0",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Battery display: off"
+		}
+			]
+		},
+		{
+			"name": "Quiet hours",
+			"priority": 8,
+			"items": [
+		{
+			"name": "Off: change photos around the clock",
+			"priority": 1,
+			"action": "./bin/quiet.sh",
+			"params": "off",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Quiet hours: off"
+		},
+		{
+			"name": "22:00-07:00",
+			"priority": 2,
+			"action": "./bin/quiet.sh",
+			"params": "22-07",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Quiet hours: 22:00-07:00"
+		},
+		{
+			"name": "* 23:00-07:00",
+			"priority": 3,
+			"action": "./bin/quiet.sh",
+			"params": "23-07",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Quiet hours: 23:00-07:00"
+		},
+		{
+			"name": "00:00-06:00",
+			"priority": 4,
+			"action": "./bin/quiet.sh",
+			"params": "00-06",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Quiet hours: 00:00-06:00"
+		}
+			]
+		},
+		{
+			"name": "Preview one photo now",
+			"priority": 9,
+			"action": "./bin/once.sh",
+			"exitmenu": true,
+			"status": false,
+			"internal": "status Showing one photo . . ."
+		},
+		{
+			"name": "Reset shuffle order",
+			"priority": 10,
+			"action": "./bin/reset.sh",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Shuffle order reset"
+		},
+		{
+			"name": "Show status",
+			"priority": 11,
+			"action": "./bin/status.sh",
+			"exitmenu": false,
+			"status": false,
+			"internal": "status Photo Frame status"
+		}
+			]
+		}
+	]
+}
