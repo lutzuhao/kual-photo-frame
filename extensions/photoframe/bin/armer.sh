@@ -14,6 +14,7 @@ flush_log
 
 # Flush /mnt/us once per wake cycle (I/O during later readyToSuspend retries can delay suspend).
 PF_FLUSHED_FOR=0
+PF_ARMED_FOR=0
 
 arm() {
 	load_settings
@@ -38,17 +39,16 @@ arm() {
 		flush_log
 		return
 	fi
+	cyc="$(awake_started)"
 	if lipc-set-prop -i com.lab126.powerd rtcWakeup "${secs}" >/dev/null 2>&1; then
-		log "readyToSuspend: rtcWakeup in ${secs}s, awake ${awake}s"
-		# Shrink the readyToSuspend retry window (this firmware sends ~6 events, 5 s apart).
-		# MobileRead t=221497: deferSuspend N is only accepted during readyToSuspend and
-		# sets remaining time in that state to ~N seconds. 1 = suspend almost immediately
-		# after this arm. (KindleCron claimed this returns to active; those measured logs
-		# stayed in readyToSuspend.)
-		if lipc-set-prop -i com.lab126.powerd deferSuspend 1 >/dev/null 2>&1; then
-			log "readyToSuspend: deferSuspend=1 accepted, state $(powerd_state)"
-		else
-			log "readyToSuspend: deferSuspend=1 rejected, state $(powerd_state)"
+		# Log once per wake cycle. powerd sends several readyToSuspend events per cycle;
+		# re-setting rtcWakeup is harmless, logging every one is not (I/O delays suspend).
+		# deferSuspend is NOT used any more: measured on Oasis FW 5.9.7, "deferSuspend 1"
+		# made powerd re-send readyToSuspend about every second, so the Kindle stayed
+		# awake for minutes to hours (log 2026-11-15, 1,331 deferrals).
+		if [ "${PF_ARMED_FOR}" != "${cyc}" ]; then
+			log "readyToSuspend: rtcWakeup in ${secs}s, awake ${awake}s"
+			PF_ARMED_FOR="${cyc}"
 		fi
 	else
 		log "readyToSuspend: rtcWakeup rejected, writing ${RTC_WAKE} instead (${secs}s), awake ${awake}s"

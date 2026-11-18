@@ -184,16 +184,23 @@ load_settings
 
 mkdir -p "${PF_STATE}" 2>/dev/null
 
+# Seconds since boot, excluding time spent suspended. Comparing it with the wall-clock time
+# on two log lines shows how long the Kindle really slept in between.
+pf_uptime() {
+	_u="$(cut -d. -f1 /proc/uptime 2>/dev/null)"
+	echo "${_u:-?}"
+}
+
 # PF_LOG_TO_RAM=1 (long-running sleep-screen daemons): log to tmpfs, copy to /mnt/us only when it is safe.
 log() {
 	if [ "${PF_LOG_TO_RAM}" = "1" ]; then
-		echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >>"${PF_RAMLOG}"
+		echo "$(date '+%Y-%m-%d %H:%M:%S') [up $(pf_uptime)] $*" >>"${PF_RAMLOG}"
 		return 0
 	fi
 	if [ -f "${PF_LOG}" ] && [ "$(wc -c <"${PF_LOG}")" -gt 300000 ]; then
 		tail -n 1000 "${PF_LOG}" >"${PF_LOG}.tmp" && mv "${PF_LOG}.tmp" "${PF_LOG}"
 	fi
-	echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >>"${PF_LOG}"
+	echo "$(date '+%Y-%m-%d %H:%M:%S') [up $(pf_uptime)] $*" >>"${PF_LOG}"
 }
 
 # Is /mnt/us usable (not exported to a computer over USB)?
