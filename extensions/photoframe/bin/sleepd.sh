@@ -57,7 +57,7 @@ draw_photo() {
 		flush_log
 		return 1
 	fi
-	if in_quiet_hours; then
+	if in_quiet_hours && ! quiet_ending_soon; then
 		if [ "${shown}" = "1" ]; then
 			hold_for_quiet "keeping the current photo"
 			flush_log

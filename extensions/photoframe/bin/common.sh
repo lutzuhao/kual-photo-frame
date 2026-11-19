@@ -143,9 +143,22 @@ quiet_end_ts() {
 	else
 		_delta=$((86400 - _tod + _end_tod))
 	fi
-	# Never return a near-zero wake (would trip the armer's < 20 s fallback to next_tick).
-	[ "${_delta}" -lt 30 ] && _delta=$((_delta + 86400))
+	# Never return a near-zero wake. Do NOT add a day here: a wake a few seconds before
+	# QUIET_END (RTC wakes can be early) then held the photo until the NEXT day's end
+	# (Oasis log 2026-11-19, woke 06:59, held until 07:00 the day after).
+	# Callers use quiet_ending_soon to change the photo instead of holding it.
+	[ "${_delta}" -lt 30 ] && _delta=30
 	echo $((_now + _delta))
+}
+
+# 0 if quiet hours end within the next QUIET_EDGE_SECS (default 300 s). Near the end of the
+# window the photo changes now instead of scheduling a wake only seconds away.
+QUIET_EDGE_SECS=300
+quiet_ending_soon() {
+	_n="$1"
+	[ -n "${_n}" ] || _n="$(date +%s)"
+	_e="$(quiet_end_ts "${_n}")"
+	[ $((_e - _n)) -le "${QUIET_EDGE_SECS}" ]
 }
 
 quiet_window_label() {

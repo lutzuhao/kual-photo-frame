@@ -170,7 +170,7 @@ while :; do
 		restore_ui "battery $(battery_pct)%"
 	fi
 
-	if in_quiet_hours; then
+	if in_quiet_hours && ! quiet_ending_soon; then
 		# Hold the photo already on screen; wake at the end of the window (<= 24 h).
 		target="$(quiet_end_ts)"
 		log "quiet hours ($(quiet_window_label), local $(local_hm)): holding photo until local $(local_hm "${target}")"
