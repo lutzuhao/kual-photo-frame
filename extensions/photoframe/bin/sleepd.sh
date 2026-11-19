@@ -21,6 +21,8 @@ setup_fbink || log "WARNING: FBInk not found, falling back to eips (no dithering
 shown=0      # 1 = a photo is on the current sleep screen
 sessions=0   # sleep-screen sessions seen so far
 due=0        # epoch time of the next scheduled photo change
+resleep=0    # 1 = we sent the Kindle back to the sleep screen after it woke on its own
+resleep_tries=0
 echo 0 >"${PF_DUEFILE}"
 
 /bin/sh "${DIR}/armer.sh" </dev/null >/dev/null 2>&1 &
@@ -31,7 +33,7 @@ cleanup() {
 	kill_pidfile "${PF_ARMERPID}"
 	kill_armer_monitor
 	restore_wifi_if_saved
-	rm -f "${PF_PIDFILE}" "${PF_MODEFILE}" "${PF_DUEFILE}" "${PF_AWAKEFILE}"
+	rm -f "${PF_PIDFILE}" "${PF_MODEFILE}" "${PF_DUEFILE}" "${PF_AWAKEFILE}" "${PF_USEREXIT}"
 	flush_log
 	exit 0
 }
@@ -98,6 +100,36 @@ draw_photo() {
 	return 0
 }
 
+# Back on the sleep screen after a wake the user did not ask for: paint the same photo again
+# (or the next one if its tick came while the Kindle was on the home screen).
+redraw_current() {
+	resleep=0
+	if [ "$(date +%s)" -ge $((due - 20)) ]; then
+		draw_photo "tick (after waking on its own)"
+		return
+	fi
+	if ! userstore_ok; then
+		log "userstore not available (USB?), photo not redrawn"
+		return 1
+	fi
+	img="$(current_image)"
+	if [ -z "${img}" ]; then
+		draw_photo "sleep screen"
+		return
+	fi
+	show_image "${img}"
+	log "back on the sleep screen: showing $(basename "${img}") again  battery=$(battery_pct)%  awake=$(awake_secs)s"
+	flush_log
+	nudge_ss_timeout
+}
+
+# Did the user press the power button in the last $1 seconds?
+user_exit_recent() {
+	_u="$(cat "${PF_USEREXIT}" 2>/dev/null)"
+	case "${_u}" in ''|*[!0-9]*) return 1 ;; esac
+	[ $(( $(date +%s) - _u )) -le "$1" ]
+}
+
 is_sleep_state() {
 	case "$1" in
 		*creen*|*eady*|*uspend*) return 0 ;;
@@ -139,11 +171,19 @@ while :; do
 			save_wifi_and_off
 			sessions=$((sessions + 1))
 			sleep "${SS_DELAY}"
-			draw_photo "sleep screen"
+			if [ "${resleep}" = "1" ] && [ "${shown}" = "1" ]; then
+				redraw_current
+			else
+				resleep=0
+				draw_photo "sleep screen"
+			fi
+			resleep_tries=0
 			continue
 			;;
 		outOfScreenSaver*)
 			shown=0
+			resleep=0
+			resleep_tries=0
 			restore_wifi_if_saved
 			log "power button: back to the Kindle UI (photo frame stays armed for the next sleep)"
 			flush_log
@@ -170,8 +210,35 @@ while :; do
 			sleep 1
 			draw_photo "tick"
 		fi
+	elif [ "${shown}" = "1" ] && [ "${resleep_tries}" -lt 3 ]; then
+		# A photo was on the sleep screen and the Kindle is now on its home screen, but the
+		# power button was not pressed: powerd sometimes wakes up on its own (about an hour
+		# into a suspend, or when a charger is plugged in) and lands on the home screen.
+		# Wait a moment in case the power-button event is still on its way, then go back.
+		sleep 3
+		st="$(powerd_state)"
+		if user_exit_recent 20; then
+			shown=0
+			resleep=0
+			resleep_tries=0
+			restore_wifi_if_saved
+			log "power button (seen by armer): back to the Kindle UI (photo frame stays armed for the next sleep)"
+			flush_log
+		elif ! is_sleep_state "${st}"; then
+			resleep=1
+			resleep_tries=$((resleep_tries + 1))
+			log "woke up on its own (state '${st}', no power button): back to the sleep screen (try ${resleep_tries})"
+			flush_log
+			lipc-set-prop -i com.lab126.powerd powerButton 1 >/dev/null 2>&1
+		fi
 	else
+		if [ "${shown}" = "1" ]; then
+			log "still on the home screen after ${resleep_tries} tries; leaving it until the next sleep"
+			flush_log
+		fi
 		shown=0
+		resleep=0
+		resleep_tries=0
 		if [ "${sessions}" = "0" ] && [ $((now - started)) -ge 60 ]; then
 			# the Kindle never went to sleep after our power-button request: use the old takeover mode
 			log "sleep screen did not start (state '${st}'); switching to takeover mode"

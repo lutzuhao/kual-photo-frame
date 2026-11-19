@@ -18,6 +18,8 @@ PF_ARMERPID="${PF_TMP}/photoframe.armer.pid"
 PF_TOUCHPID="${PF_TMP}/photoframe.touch.pid"
 PF_DUEFILE="${PF_TMP}/photoframe.due"
 PF_RAMLOG="${PF_TMP}/photoframe.log"
+# armer.sh writes the time of the last outOfScreenSaver (power button) here.
+PF_USEREXIT="${PF_TMP}/photoframe.userexit"
 PF_FBINK="${PF_TMP}/pf_fbink"
 PF_AWAKEFILE="${PF_TMP}/photoframe.awake"
 PF_WIFIFILE="${PF_TMP}/photoframe.wifi"

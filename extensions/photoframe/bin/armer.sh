@@ -67,10 +67,13 @@ alive() {
 
 while alive; do
 	t0="$(date +%s)"
-	lipc-wait-event -m com.lab126.powerd readyToSuspend 2>/dev/null | while read -r ev rest; do
+	# outOfScreenSaver is recorded too, so sleepd.sh can tell a power-button press
+	# from a wake that the Kindle did on its own (it never misses it between waits).
+	lipc-wait-event -m com.lab126.powerd readyToSuspend,outOfScreenSaver 2>/dev/null | while read -r ev rest; do
 		alive || exit 0
 		case "${ev}" in
 			readyToSuspend*) arm ;;
+			outOfScreenSaver*) date +%s >"${PF_USEREXIT}" ;;
 		esac
 	done
 	alive || break
