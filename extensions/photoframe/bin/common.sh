@@ -23,6 +23,10 @@ PF_USEREXIT="${PF_TMP}/photoframe.userexit"
 PF_FBINK="${PF_TMP}/pf_fbink"
 PF_AWAKEFILE="${PF_TMP}/photoframe.awake"
 PF_WIFIFILE="${PF_TMP}/photoframe.wifi"
+# Power diagnostics (see diag_* below): RAM buffer, copied to /mnt/us with the log.
+PF_DIAG="${PF_HOME}/diag.txt"
+PF_RAMDIAG="${PF_TMP}/photoframe.diag"
+PF_CNT="${PF_TMP}/photoframe.cnt"
 RTC_WAKE="/sys/devices/platform/mxc_rtc.0/wakeup_enable"
 if [ ! -e "$RTC_WAKE" ]; then for _r in /sys/devices/platform/*rtc*/wakeup_enable /sys/devices/platform/*/*rtc*/wakeup_enable; do [ -e "$_r" ] && { RTC_WAKE="$_r"; break; }; done; fi
 PATH="/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
@@ -199,23 +203,40 @@ load_settings
 
 mkdir -p "${PF_STATE}" 2>/dev/null
 
-# Seconds since boot, excluding time spent suspended. Comparing it with the wall-clock time
-# on two log lines shows how long the Kindle really slept in between.
+# Seconds of CPU-awake time: CLOCK_MONOTONIC, which stops while the Kindle is suspended.
+# NOTE: /proc/uptime is CLOCK_BOOTTIME on these kernels and KEEPS counting during suspend,
+# so it cannot show sleep (the [up N] prefix used before 2026-11-21 was misleading).
+# /proc/timer_list prints "now at <ns> nsecs" from ktime_get() (monotonic). Falls back to "?".
+pf_mono() {
+	_m="$(awk '/^now at/{printf "%d", $3 / 1000000000; exit}' /proc/timer_list 2>/dev/null)"
+	echo "${_m:-?}"
+}
 pf_uptime() {
 	_u="$(cut -d. -f1 /proc/uptime 2>/dev/null)"
 	echo "${_u:-?}"
 }
 
+# POSIX TZ string for TZ_OFFSET (+8 -> PFT-8). The Kindle's own TZ made `date` print
+# times 9h43m off Taipei in the 2026-11 Oasis logs, so log stamps use this instead.
+pf_tzstr() {
+	_o="$(tz_offset_hours 2>/dev/null)"
+	case "${_o}" in ''|*[!0-9-]*) _o=8 ;; esac
+	if [ "${_o}" -ge 0 ]; then echo "PFT-${_o}"; else echo "PFT${_o#-}"; fi
+}
+pf_ts() {
+	TZ="$(pf_tzstr)" date '+%Y-%m-%d %H:%M:%S'
+}
+
 # PF_LOG_TO_RAM=1 (long-running sleep-screen daemons): log to tmpfs, copy to /mnt/us only when it is safe.
 log() {
 	if [ "${PF_LOG_TO_RAM}" = "1" ]; then
-		echo "$(date '+%Y-%m-%d %H:%M:%S') [up $(pf_uptime)] $*" >>"${PF_RAMLOG}"
+		echo "$(pf_ts) [mono $(pf_mono)] $*" >>"${PF_RAMLOG}"
 		return 0
 	fi
 	if [ -f "${PF_LOG}" ] && [ "$(wc -c <"${PF_LOG}")" -gt 300000 ]; then
 		tail -n 1000 "${PF_LOG}" >"${PF_LOG}.tmp" && mv "${PF_LOG}.tmp" "${PF_LOG}"
 	fi
-	echo "$(date '+%Y-%m-%d %H:%M:%S') [up $(pf_uptime)] $*" >>"${PF_LOG}"
+	echo "$(pf_ts) [mono $(pf_mono)] $*" >>"${PF_LOG}"
 }
 
 # Is /mnt/us usable (not exported to a computer over USB)?
@@ -226,12 +247,13 @@ userstore_ok() {
 }
 
 flush_log() {
-	[ -s "${PF_RAMLOG}" ] || return 0
+	[ -s "${PF_RAMLOG}" ] || { flush_diag; return 0; }
 	userstore_ok || return 0
 	if [ -f "${PF_LOG}" ] && [ "$(wc -c <"${PF_LOG}")" -gt 300000 ]; then
 		tail -n 1000 "${PF_LOG}" >"${PF_LOG}.tmp" && mv "${PF_LOG}.tmp" "${PF_LOG}"
 	fi
 	cat "${PF_RAMLOG}" >>"${PF_LOG}" 2>/dev/null && rm -f "${PF_RAMLOG}"
+	flush_diag
 }
 
 # set_setting KEY VALUE: change (or add) KEY=VALUE in settings.sh
@@ -434,6 +456,8 @@ powerd_remaining() {
 	lipc-get-prop com.lab126.powerd status 2>/dev/null | awk -F': ' '/Remaining time in this state/{print $2; exit}'
 }
 
+# UNUSED since 2026-11-21: on the Oasis suspendGrace=1 was "accepted" but the remaining time
+# only moved by the elapsed time (26.47 -> 26.39 s), i.e. no effect. Kept for reference.
 # After a photo is on the sleep screen, try to shrink powerd's ~60 s screenSaver (t2) dwell
 # so readyToSuspend starts sooner. t2_timeout itself is a kdb/rootfs setting we do not change.
 # suspendGrace is the documented T2-related lipc property; behaviour is unconfirmed, so log
@@ -600,4 +624,156 @@ launch_detached() {
 copy_to_run() {
 	rm -rf "${PF_RUN}"
 	mkdir -p "${PF_RUN}" && cp -f "$1"/*.sh "${PF_RUN}/"
+}
+
+# ---------------------------------------------------------------------------
+# Power diagnostics (added 2026-11-21 to find out why the Oasis drained in ~1 day).
+# Everything is collected in RAM (tmpfs) and appended to /mnt/us/photoframe/diag.txt only
+# when flush_log runs on a wake, so the extra I/O never delays a suspend.
+# Lines that could carry a device serial are dropped (pf_sanitize).
+# ---------------------------------------------------------------------------
+PF_DIAG_MAX=2000000
+
+pf_sanitize() {
+	grep -v -i -E 'serial|dsn|[BG]0[0-9A-Z]{14}' 2>/dev/null
+}
+
+flush_diag() {
+	[ -s "${PF_RAMDIAG}" ] || return 0
+	userstore_ok || return 0
+	if [ -f "${PF_DIAG}" ] && [ "$(wc -c <"${PF_DIAG}")" -gt "${PF_DIAG_MAX}" ]; then
+		tail -n 8000 "${PF_DIAG}" >"${PF_DIAG}.tmp" && mv "${PF_DIAG}.tmp" "${PF_DIAG}"
+	fi
+	cat "${PF_RAMDIAG}" >>"${PF_DIAG}" 2>/dev/null && rm -f "${PF_RAMDIAG}"
+}
+
+diag() {
+	echo "$*" >>"${PF_RAMDIAG}"
+}
+
+# Tiny tmpfs counters shared by armer.sh and sleepd.sh.
+counter_inc() {
+	_f="${PF_CNT}.$1"
+	_n="$(cat "${_f}" 2>/dev/null)"
+	case "${_n}" in ''|*[!0-9]*) _n=0 ;; esac
+	echo $((_n + 1)) >"${_f}"
+}
+counter_take() {
+	_f="${PF_CNT}.$1"
+	_n="$(cat "${_f}" 2>/dev/null)"
+	case "${_n}" in ''|*[!0-9]*) _n=0 ;; esac
+	echo 0 >"${_f}"
+	echo "${_n}"
+}
+
+# Front light: framework level and the actual hardware brightness (0 = off).
+fl_status() {
+	_i="$(lipc-get-prop com.lab126.powerd flIntensity 2>/dev/null)"
+	_a=""
+	for _b in /sys/class/backlight/*; do
+		[ -r "${_b}/actual_brightness" ] && _a="${_a}$(cat "${_b}/actual_brightness" 2>/dev/null)"
+		[ -r "${_b}/actual_brightness" ] || { [ -r "${_b}/brightness" ] && _a="${_a}$(cat "${_b}/brightness" 2>/dev/null)"; }
+	done
+	echo "${_i:-?}/hw${_a:-?}"
+}
+
+# On the sleep screen the light should be off. If the hardware still reports a level,
+# switch the hardware off (the user's flIntensity setting is not changed).
+fl_off_in_ss() {
+	case "$(powerd_state)" in *creen*|*eady*|*uspend*) ;; *) return 0 ;; esac
+	for _b in /sys/class/backlight/*; do
+		_v="$(cat "${_b}/actual_brightness" 2>/dev/null)"
+		case "${_v}" in ''|*[!0-9]*|0) continue ;; esac
+		echo 0 >"${_b}/brightness" 2>/dev/null
+		log "front light was ${_v} on the sleep screen (${_b##*/}), switched off"
+	done
+}
+
+# Interrupt counts that rose since the last call (the wake-up source shows up here).
+irq_diff() {
+	_p="${PF_CNT}.irq"
+	[ -r /proc/interrupts ] || { echo "?"; return; }
+	cat /proc/interrupts >"${_p}.new" 2>/dev/null
+	if [ -f "${_p}" ]; then
+		awk '
+		function cnt(   i, c) { c = 0; for (i = 2; i <= NF && $i ~ /^[0-9]+$/; i++) c += $i; return c }
+		function nm(   i, n) { n = ""; for (i = 2; i <= NF; i++) if ($i !~ /^[0-9]+$/) n = n (n == "" ? "" : "_") $i; return substr(n, 1, 28) }
+		NR == FNR { if ($1 ~ /:$/) p[$1] = cnt(); next }
+		$1 ~ /:$/ { d = cnt() - p[$1]; if (d > 0) printf "%d %s%s\n", d, $1, nm() }' "${_p}" "${_p}.new" | \
+			sort -rn | head -n 8 | awk '{printf "%s+%s ", $2, $1}'
+	fi
+	mv "${_p}.new" "${_p}"
+}
+
+# One line per power event: how long the Kindle really slept and was awake since the
+# previous line (wall clock minus CLOCK_MONOTONIC = time suspended), plus counters.
+diag_point() {
+	_now="$(date +%s)"
+	_mono="$(pf_mono)"
+	_pw="$(cat "${PF_CNT}.wall" 2>/dev/null)"
+	_pm="$(cat "${PF_CNT}.mono" 2>/dev/null)"
+	echo "${_now}" >"${PF_CNT}.wall"
+	echo "${_mono}" >"${PF_CNT}.mono"
+	_d="since-last ?"
+	case "${_pw}${_pm}${_mono}" in
+		*[!0-9]*|'') ;;
+		*) _dw=$((_now - _pw)); _dm=$((_mono - _pm)); _d="since-last wall ${_dw}s awake ${_dm}s slept $((_dw - _dm))s" ;;
+	esac
+	_tot="$(cat "${PF_CNT}.start" 2>/dev/null)"
+	_sw="${_tot% *}"
+	_sm="${_tot#* }"
+	case "${_sw}${_sm}${_mono}" in
+		*[!0-9]*|'') ;;
+		*) set -- "$@" "| run: wall $((_now - _sw))s awake $((_mono - _sm))s" ;;
+	esac
+	diag "$(pf_ts) [mono ${_mono}] $* | ${_d} | rts $(counter_take rts) rtc $(counter_take rtcset)/$(counter_take rtcfail) rtsarg $(cat "${PF_CNT}.rtsarg" 2>/dev/null) | bat $(battery_pct)% chg $(lipc-get-prop com.lab126.powerd isCharging 2>/dev/null) | state $(powerd_state) | fl $(fl_status) | wifi $(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null) | irq $(irq_diff)"
+}
+
+# Full powerd status on one line (wake points only; it is ~20 short lines).
+diag_powerd_status() {
+	diag "  powerd: $(lipc-get-prop com.lab126.powerd status 2>/dev/null | pf_sanitize | tr '\n' '|' | cut -c1-600)"
+}
+
+# New system-log lines about power since the last call (max 40 per call).
+diag_syslog() {
+	_f=/var/log/messages
+	[ -r "${_f}" ] || return 0
+	_prev="$(cat "${PF_CNT}.syslog" 2>/dev/null)"
+	case "${_prev}" in ''|*[!0-9]*) _prev=0 ;; esac
+	_cur="$(wc -l <"${_f}" | tr -cd '0-9')"
+	[ -z "${_cur}" ] && return 0
+	[ "${_cur}" -lt "${_prev}" ] && _prev=0
+	echo "${_cur}" >"${PF_CNT}.syslog"
+	[ "${_cur}" -gt "${_prev}" ] || return 0
+	tail -n $((_cur - _prev)) "${_f}" | \
+		grep -i -E 'powerd|suspend|hibernat|resum|wakeup|wake up|rtc|PM: |freez|abort|screensaver|outOfScreenSaver|disk|battery|gasgauge' | \
+		grep -v -E 'lipc-wait-event|photoframe' | pf_sanitize | tail -n 40 | cut -c1-300 | sed 's/^/  syslog: /' >>"${PF_RAMDIAG}"
+}
+
+# Once per start: kernel, sleep states, powerd configuration.
+diag_static() {
+	diag ""
+	diag "==== $(pf_ts) diagnostics start (pid $$) ===="
+	diag "  kernel: $(uname -r 2>/dev/null)  fw: $(cat /etc/prettyversion.txt 2>/dev/null | head -n 1 | pf_sanitize)"
+	diag "  /sys/power/state: $(cat /sys/power/state 2>/dev/null)  disk: $(cat /sys/power/disk 2>/dev/null)  wakeup_count: $(cat /sys/power/wakeup_count 2>/dev/null)"
+	diag "  mono: $(pf_mono)  uptime(boottime): $(pf_uptime)  rtc wake: ${RTC_WAKE} $(cat "${RTC_WAKE}" 2>/dev/null)  wakealarm: $(cat /sys/class/rtc/rtc0/wakealarm 2>/dev/null)"
+	diag_powerd_status
+	for _d in /etc/kdb.src/*/system/daemon/powerd /etc/kdb/system/daemon/powerd /var/local/kdb/system/daemon/powerd; do
+		[ -d "${_d}" ] || continue
+		for _k in "${_d}"/*; do
+			[ -f "${_k}" ] && diag "  kdb ${_k}: $(cut -c1-120 "${_k}" 2>/dev/null | head -n 2 | pf_sanitize | tr '\n' ' ')"
+		done
+	done 2>/dev/null
+	diag "  backlight: $(ls /sys/class/backlight 2>/dev/null | tr '\n' ' ') fl $(fl_status)"
+	cat /proc/interrupts 2>/dev/null | pf_sanitize | sed 's/^/  irq-start: /' >>"${PF_RAMDIAG}"
+	irq_diff >/dev/null
+	# Start pointer for diag_syslog: include the last 300 lines of history once.
+	_c=""
+	[ -r /var/log/messages ] && _c="$(wc -l </var/log/messages | tr -cd '0-9')"
+	[ -n "${_c}" ] && [ "${_c}" -gt 300 ] && echo $((_c - 300)) >"${PF_CNT}.syslog" || echo 0 >"${PF_CNT}.syslog"
+	diag_syslog
+	for _n in rts rtcset rtcfail; do echo 0 >"${PF_CNT}.${_n}"; done
+	echo "$(date +%s) $(pf_mono)" >"${PF_CNT}.start"
+	date +%s >"${PF_CNT}.wall"
+	pf_mono >"${PF_CNT}.mono"
 }

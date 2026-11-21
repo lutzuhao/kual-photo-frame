@@ -40,7 +40,11 @@ arm() {
 		return
 	fi
 	cyc="$(awake_started)"
+	# rtcWakeup is set on EVERY readyToSuspend of the cycle on purpose: powerd only accepts it
+	# in this window and a later value wins (KindleCron, 64mb.org notes); the latest set is
+	# also the most accurate. diag.txt counts how many were sent per cycle ("rts"/"rtc").
 	if lipc-set-prop -i com.lab126.powerd rtcWakeup "${secs}" >/dev/null 2>&1; then
+		counter_inc rtcset
 		# Log once per wake cycle. powerd sends several readyToSuspend events per cycle;
 		# re-setting rtcWakeup is harmless, logging every one is not (I/O delays suspend).
 		# deferSuspend is NOT used any more: measured on Oasis FW 5.9.7, "deferSuspend 1"
@@ -51,6 +55,7 @@ arm() {
 			PF_ARMED_FOR="${cyc}"
 		fi
 	else
+		counter_inc rtcfail
 		log "readyToSuspend: rtcWakeup rejected, writing ${RTC_WAKE} instead (${secs}s), awake ${awake}s"
 		[ -w "${RTC_WAKE}" ] && echo -n "${secs}" >"${RTC_WAKE}" 2>/dev/null
 	fi
@@ -72,7 +77,7 @@ while alive; do
 	lipc-wait-event -m com.lab126.powerd readyToSuspend,outOfScreenSaver 2>/dev/null | while read -r ev rest; do
 		alive || exit 0
 		case "${ev}" in
-			readyToSuspend*) arm ;;
+			readyToSuspend*) counter_inc rts; echo "${rest}" >"${PF_CNT}.rtsarg"; arm ;;
 			outOfScreenSaver*) date +%s >"${PF_USEREXIT}" ;;
 		esac
 	done

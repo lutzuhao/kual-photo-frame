@@ -15,6 +15,7 @@ __pycache__/
 *.log
 log.txt
 photoframe/log.txt
+photoframe/diag.txt
 photoframe/state/
 photoframe/STOP
 photoframe/images/*

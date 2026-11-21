@@ -117,6 +117,7 @@ To view a rotated landscape photo upright, turn the Kindle 90 degrees clockwise 
 ## Troubleshooting
 
 - **Photos do not change:** check the battery (a low charge holds the current photo), check quiet hours, and read `photoframe/log.txt` on the Kindle. After any script update, Stop then Start in KUAL.
+- **Battery drains fast:** sleep-screen mode writes `photoframe/diag.txt`: one line per power event with the real time suspended (`slept`, wall clock minus the monotonic clock), the CPU-awake time, readyToSuspend/rtcWakeup counts, battery, front light, the interrupts that fired (wake source) and power-related system-log lines. Log lines carry `[mono N]` (seconds the CPU was awake since boot; `/proc/uptime` keeps counting during suspend and cannot show sleep).
 - **Kindle clock vs local time:** log timestamps may be UTC (about 8 hours behind Taipei). Quiet hours use `TZ_OFFSET`, not the log clock. Adjust `TZ_OFFSET` if the night window feels wrong.
 - **Wi-Fi was on and is now off:** sleep-screen mode turns it off while a photo is up; waking the Kindle or pressing Stop should restore it.
 - **Stock sleep cover flashes first:** wait the few seconds set by `SS_DELAY` (default 3).
@@ -232,7 +233,7 @@ python3 tools/convert_photos.py --device pw1 --input /照片資料夾 --output .
 
 ### 萬一出問題
 
-照片不換時，先看電量是不是過低、是否在夜間時段，並查看 Kindle 上的 `photoframe/log.txt`。更新程式後記得先 Stop 再 Start。紀錄時間可能是 UTC；夜間時段看的是 `TZ_OFFSET`，不是紀錄檔上的鐘。卡住就長按電源鍵約 20 秒。
+照片不換時，先看電量是不是過低、是否在夜間時段，並查看 Kindle 上的 `photoframe/log.txt`。更新程式後記得先 Stop 再 Start。耗電太快時看 `photoframe/diag.txt`：每次睡眠／喚醒記一行，含真正睡了多久（slept）、醒著多久、電量、前光和喚醒來源。紀錄時間可能是 UTC；夜間時段看的是 `TZ_OFFSET`，不是紀錄檔上的鐘。卡住就長按電源鍵約 20 秒。
 
 ### 聲明
 

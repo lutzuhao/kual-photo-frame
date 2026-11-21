@@ -5,6 +5,9 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 mode="$(cat "${PF_MODEFILE}" 2>/dev/null)"
 if loop_running; then
 	log "stop requested from KUAL, killing ${mode} loop $(cat "${PF_PIDFILE}")"
+	diag_point "stop requested from KUAL"
+	diag_powerd_status
+	diag_syslog
 fi
 kill_pidfile "${PF_PIDFILE}"
 kill_pidfile "${PF_ARMERPID}"
