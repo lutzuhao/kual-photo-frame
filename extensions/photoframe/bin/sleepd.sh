@@ -170,11 +170,18 @@ while :; do
 	[ -n "${ev}" ] && log "event: ${ev} (state $(powerd_state))"
 	case "${ev}" in
 		goingToScreenSaver*)
-			diag_point "goingToScreenSaver"
+			diag_point "goingToScreenSaver ${ev#goingToScreenSaver }"
 			mark_awake
 			save_wifi_and_off
 			sessions=$((sessions + 1))
 			sleep "${SS_DELAY}"
+			_sst="$(powerd_state)"
+			if ! is_sleep_state "${_sst}"; then
+				log "goingToScreenSaver aborted (state '${_sst}')"
+				diag_point "goingToScreenSaver aborted"
+				flush_log
+				continue
+			fi
 			if [ "${resleep}" = "1" ] && [ "${shown}" = "1" ]; then
 				redraw_current
 			else
@@ -208,6 +215,7 @@ while :; do
 			diag_point "wakeupFromSuspend ${ev#wakeupFromSuspend }"
 			diag_powerd_status
 			diag_syslog
+			diag_dmesg
 			mark_awake
 			save_wifi_and_off
 			;;
@@ -243,12 +251,16 @@ while :; do
 		sleep 3
 		st="$(powerd_state)"
 		if user_exit_recent 20; then
+			_uarg="$(cat "${PF_USEREXIT}.arg" 2>/dev/null)"
 			shown=0
 			resleep=0
 			resleep_fail=0
 			restore_wifi_if_saved
-			diag_point "power button (seen by armer)"
-			log "power button (seen by armer): back to the Kindle UI (photo frame stays armed for the next sleep)"
+			diag_point "power button (seen by armer arg=${_uarg})"
+			diag_powerd_status
+			diag_syslog
+			diag_dmesg
+			log "power button (seen by armer, arg=${_uarg}): back to the Kindle UI (photo frame stays armed for the next sleep)"
 			flush_log
 		elif ! is_sleep_state "${st}"; then
 			if [ "${resleep_fail}" -ge 5 ]; then
@@ -259,9 +271,13 @@ while :; do
 				flush_log
 				continue
 			fi
+			_since="before any suspend"
+			[ "${last_susp}" -gt 0 ] && _since="$(( $(date +%s) - last_susp ))s after 'suspending'"
 			diag_point "woke on its own (state ${st})"
+			diag_powerd_status
 			diag_syslog
-			log "woke up on its own (state '${st}', no power button, $(( $(date +%s) - last_susp ))s after 'suspending'): pressing power to go back to the sleep screen"
+			diag_dmesg
+			log "woke up on its own (state '${st}', no power button, ${_since}): pressing power to go back to the sleep screen"
 			resleep=1
 			lipc-set-prop -i com.lab126.powerd powerButton 1 >/dev/null 2>&1
 			sleep $((SS_DELAY + 2))

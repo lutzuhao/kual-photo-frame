@@ -634,8 +634,15 @@ copy_to_run() {
 # ---------------------------------------------------------------------------
 PF_DIAG_MAX=2000000
 
+# BusyBox 1.17 grep -E can reject {14}, which silently empties piped output.
+# Use plain awk string/ERE matching without {n} quantifiers so it works everywhere.
 pf_sanitize() {
-	grep -v -i -E 'serial|dsn|[BG]0[0-9A-Z]{14}' 2>/dev/null
+	awk '{
+		l = tolower($0)
+		if (index(l, "serial") || index(l, "dsn")) next
+		if ($0 ~ /[BG]0[0-9A-Za-z][0-9A-Za-z][0-9A-Za-z][0-9A-Za-z][0-9A-Za-z][0-9A-Za-z][0-9A-Za-z][0-9A-Za-z][0-9A-Za-z][0-9A-Za-z][0-9A-Za-z][0-9A-Za-z][0-9A-Za-z][0-9A-Za-z]/) next
+		print
+	}' 2>/dev/null
 }
 
 flush_diag() {
@@ -689,18 +696,43 @@ fl_off_in_ss() {
 	done
 }
 
+# Voltage (mV), load current (mA), and remaining capacity (mAh) from gasgauge-info.
+_gg_num() {
+	gasgauge-info "$1" 2>/dev/null | awk 'NR==1{for(i=1;i<=NF;i++) if($i ~ /^-?[0-9]+$/){print $i; exit}}'
+}
+batt_diag() {
+	_pct="$(battery_pct)"
+	_mv="$(_gg_num -v)"
+	_ma="$(_gg_num -l)"
+	_mah="$(_gg_num -m)"
+	echo "${_pct}% (${_mv:-?}mV ${_ma:-?}mA ${_mah:-?}mAh)"
+}
+
 # Interrupt counts that rose since the last call (the wake-up source shows up here).
+# Avoid awk user functions for BusyBox 1.17 compatibility.
 irq_diff() {
 	_p="${PF_CNT}.irq"
 	[ -r /proc/interrupts ] || { echo "?"; return; }
 	cat /proc/interrupts >"${_p}.new" 2>/dev/null
 	if [ -f "${_p}" ]; then
 		awk '
-		function cnt(   i, c) { c = 0; for (i = 2; i <= NF && $i ~ /^[0-9]+$/; i++) c += $i; return c }
-		function nm(   i, n) { n = ""; for (i = 2; i <= NF; i++) if ($i !~ /^[0-9]+$/) n = n (n == "" ? "" : "_") $i; return substr(n, 1, 28) }
-		NR == FNR { if ($1 ~ /:$/) p[$1] = cnt(); next }
-		$1 ~ /:$/ { d = cnt() - p[$1]; if (d > 0) printf "%d %s%s\n", d, $1, nm() }' "${_p}" "${_p}.new" | \
-			sort -rn | head -n 8 | awk '{printf "%s+%s ", $2, $1}'
+		NR == FNR {
+			if ($1 ~ /:$/) {
+				c = 0
+				for (i = 2; i <= NF && $i ~ /^[0-9]+$/; i++) c += $i
+				p[$1] = c
+			}
+			next
+		}
+		$1 ~ /:$/ {
+			c = 0; n = ""
+			for (i = 2; i <= NF; i++) {
+				if ($i ~ /^[0-9]+$/ && n == "") c += $i
+				else n = n (n == "" ? "" : "_") $i
+			}
+			d = c - p[$1]
+			if (d > 0) printf "%d %s%s\n", d, $1, substr(n, 1, 28)
+		}' "${_p}" "${_p}.new" 2>/dev/null | sort -rn | head -n 8 | awk '{printf "%s+%s ", $2, $1}'
 	fi
 	mv "${_p}.new" "${_p}"
 }
@@ -726,18 +758,18 @@ diag_point() {
 		*[!0-9]*|'') ;;
 		*) set -- "$@" "| run: wall $((_now - _sw))s awake $((_mono - _sm))s" ;;
 	esac
-	diag "$(pf_ts) [mono ${_mono}] $* | ${_d} | rts $(counter_take rts) rtc $(counter_take rtcset)/$(counter_take rtcfail) rtsarg $(cat "${PF_CNT}.rtsarg" 2>/dev/null) | bat $(battery_pct)% chg $(lipc-get-prop com.lab126.powerd isCharging 2>/dev/null) | state $(powerd_state) | fl $(fl_status) | wifi $(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null) | irq $(irq_diff)"
+	diag "$(pf_ts) [mono ${_mono}] $* | ${_d} | rts $(counter_take rts) rtc $(counter_take rtcset)/$(counter_take rtcfail) rtsarg $(cat "${PF_CNT}.rtsarg" 2>/dev/null) | bat $(batt_diag) chg $(lipc-get-prop com.lab126.powerd isCharging 2>/dev/null) | state $(powerd_state) | fl $(fl_status) | wifi $(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null) | irq $(irq_diff)"
 }
 
 # Full powerd status on one line (wake points only; it is ~20 short lines).
 diag_powerd_status() {
-	diag "  powerd: $(lipc-get-prop com.lab126.powerd status 2>/dev/null | pf_sanitize | tr '\n' '|' | cut -c1-600)"
+	diag "  powerd: $(lipc-get-prop com.lab126.powerd status 2>/dev/null | pf_sanitize | tr '\n' '|' | cut -c1-700)"
 }
 
-# New system-log lines about power since the last call (max 40 per call).
+# New system-log lines about power since the last call (max 50 per call).
 diag_syslog() {
 	_f=/var/log/messages
-	[ -r "${_f}" ] || return 0
+	[ -r "${_f}" ] || { diag "  syslog: ${_f} unreadable"; return 0; }
 	_prev="$(cat "${PF_CNT}.syslog" 2>/dev/null)"
 	case "${_prev}" in ''|*[!0-9]*) _prev=0 ;; esac
 	_cur="$(wc -l <"${_f}" | tr -cd '0-9')"
@@ -745,9 +777,19 @@ diag_syslog() {
 	[ "${_cur}" -lt "${_prev}" ] && _prev=0
 	echo "${_cur}" >"${PF_CNT}.syslog"
 	[ "${_cur}" -gt "${_prev}" ] || return 0
-	tail -n $((_cur - _prev)) "${_f}" | \
-		grep -i -E 'powerd|suspend|hibernat|resum|wakeup|wake up|rtc|PM: |freez|abort|screensaver|outOfScreenSaver|disk|battery|gasgauge' | \
-		grep -v -E 'lipc-wait-event|photoframe' | pf_sanitize | tail -n 40 | cut -c1-300 | sed 's/^/  syslog: /' >>"${PF_RAMDIAG}"
+	tail -n $((_cur - _prev)) "${_f}" | 		awk '{
+			l = tolower($0)
+			if (index(l,"lipc-wait-event") || index(l,"photoframe")) next
+			if (l ~ /powerd|suspend|hibernat|resum|wakeup|wake up|rtc|pm:|freez|abort|screensaver|outofscreensaver|disk|battery|gasgauge|falcon|hall|cover|button|usb|charg/) print
+		}' | pf_sanitize | tail -n 50 | cut -c1-300 | sed 's/^/  syslog: /' >>"${PF_RAMDIAG}"
+}
+
+# Recent kernel PM/wakeup lines from dmesg (max 25).
+diag_dmesg() {
+	dmesg 2>/dev/null | awk '{
+		l = tolower($0)
+		if (l ~ /pm:|suspend|hibernat|resum|wake|rtc|falcon|max77696|hall|power|usb|charg/) print
+	}' | pf_sanitize | tail -n 25 | cut -c1-260 | sed 's/^/  dmesg: /' >>"${PF_RAMDIAG}"
 }
 
 # Once per start: kernel, sleep states, powerd configuration.
@@ -756,22 +798,30 @@ diag_static() {
 	diag "==== $(pf_ts) diagnostics start (pid $$) ===="
 	diag "  kernel: $(uname -r 2>/dev/null)  fw: $(cat /etc/prettyversion.txt 2>/dev/null | head -n 1 | pf_sanitize)"
 	diag "  /sys/power/state: $(cat /sys/power/state 2>/dev/null)  disk: $(cat /sys/power/disk 2>/dev/null)  wakeup_count: $(cat /sys/power/wakeup_count 2>/dev/null)"
+	diag "  falconblk: $(ls -la /sys/devices/platform/falconblk/uevent 2>/dev/null)  hib_tracker: $(ls -la /var/local/system/powerd/hibernate_session_tracker 2>/dev/null)"
 	diag "  mono: $(pf_mono)  uptime(boottime): $(pf_uptime)  rtc wake: ${RTC_WAKE} $(cat "${RTC_WAKE}" 2>/dev/null)  wakealarm: $(cat /sys/class/rtc/rtc0/wakealarm 2>/dev/null)"
+	diag "  bat: $(batt_diag) temp $(_gg_num -k)F"
 	diag_powerd_status
 	for _d in /etc/kdb.src/*/system/daemon/powerd /etc/kdb/system/daemon/powerd /var/local/kdb/system/daemon/powerd; do
 		[ -d "${_d}" ] || continue
 		for _k in "${_d}"/*; do
-			[ -f "${_k}" ] && diag "  kdb ${_k}: $(cut -c1-120 "${_k}" 2>/dev/null | head -n 2 | pf_sanitize | tr '\n' ' ')"
+			[ -f "${_k}" ] || continue
+			_kv="$(cut -c1-120 "${_k}" 2>/dev/null | head -n 2 | pf_sanitize | tr '\n' ' ')"
+			[ -n "${_kv}" ] && diag "  kdb ${_k}: ${_kv}"
 		done
 	done 2>/dev/null
+	if have sqlite3 && [ -r /var/local/appreg.db ]; then
+		sqlite3 /var/local/appreg.db "SELECT handlerId,name,value FROM properties WHERE name LIKE '%hibernate%' OR name LIKE '%suspend%';" 2>/dev/null | pf_sanitize | sed 's/^/  appreg: /' >>"${PF_RAMDIAG}"
+	fi
 	diag "  backlight: $(ls /sys/class/backlight 2>/dev/null | tr '\n' ' ') fl $(fl_status)"
 	cat /proc/interrupts 2>/dev/null | pf_sanitize | sed 's/^/  irq-start: /' >>"${PF_RAMDIAG}"
-	irq_diff >/dev/null
+	irq_diff 2>>"${PF_RAMDIAG}" >/dev/null
 	# Start pointer for diag_syslog: include the last 300 lines of history once.
 	_c=""
 	[ -r /var/log/messages ] && _c="$(wc -l </var/log/messages | tr -cd '0-9')"
 	[ -n "${_c}" ] && [ "${_c}" -gt 300 ] && echo $((_c - 300)) >"${PF_CNT}.syslog" || echo 0 >"${PF_CNT}.syslog"
 	diag_syslog
+	diag_dmesg
 	for _n in rts rtcset rtcfail; do echo 0 >"${PF_CNT}.${_n}"; done
 	echo "$(date +%s) $(pf_mono)" >"${PF_CNT}.start"
 	date +%s >"${PF_CNT}.wall"
