@@ -18,6 +18,8 @@ echo $$ >"${PF_PIDFILE}"
 echo sleep >"${PF_MODEFILE}"
 log "==== photo frame start: sleep-screen mode (pid $$, $(interval_label), ${ORIENTATION} photos, battery display ${SHOW_BATTERY}, quiet $(quiet_window_label) TZ${TZ_OFFSET})"
 setup_fbink || log "WARNING: FBInk not found, falling back to eips (no dithering)"
+fl_lock_start
+hall_off_start
 diag_static
 flush_log
 
@@ -40,7 +42,9 @@ cleanup() {
 	kill_pidfile "${PF_ARMERPID}"
 	kill_armer_monitor
 	restore_wifi_if_saved
-	rm -f "${PF_PIDFILE}" "${PF_MODEFILE}" "${PF_DUEFILE}" "${PF_AWAKEFILE}" "${PF_USEREXIT}"
+	fl_lock_restore
+	hall_off_restore
+	rm -f "${PF_PIDFILE}" "${PF_MODEFILE}" "${PF_DUEFILE}" "${PF_AWAKEFILE}" "${PF_USEREXIT}" "${PF_SUSP}" "${PF_WAKE}"
 	flush_log
 	exit 0
 }
@@ -194,14 +198,23 @@ while :; do
 			continue
 			;;
 		outOfScreenSaver*)
-			diag_point "outOfScreenSaver"
-			shown=0
-			resleep=0
-			resleep_fail=0
-			restore_wifi_if_saved
-			log "power button: back to the Kindle UI (photo frame stays armed for the next sleep)"
-			flush_log
-			continue
+			sleep 1   # let armer.sh record the suspending/wake details first
+			if failed_hibernate_wake; then
+				# failed 'suspending disk': nobody pressed anything. Handled below
+				# like any other wake on its own (light off, back to the sleep screen).
+				fl_apply
+				diag_point "outOfScreenSaver after failed hibernate (not a button)"
+				log "outOfScreenSaver ${ev#outOfScreenSaver } right after a failed 'suspending disk': not a power button"
+			else
+				diag_point "outOfScreenSaver"
+				shown=0
+				resleep=0
+				resleep_fail=0
+				restore_wifi_if_saved
+				log "power button: back to the Kindle UI (photo frame stays armed for the next sleep)"
+				flush_log
+				continue
+			fi
 			;;
 		suspending*)
 			# Only RAM work here: the Kindle suspends a few seconds after this event.
@@ -218,6 +231,7 @@ while :; do
 			diag_dmesg
 			mark_awake
 			save_wifi_and_off
+			hall_off_apply
 			;;
 		resuming*)
 			diag_point "resuming"
@@ -244,13 +258,23 @@ while :; do
 		# suspend about an hour in, goes to "suspending disk" and lands in "active" ~immediately
 		# (log 2026-11-20: 13 times). Earlier versions gave up after 3 such wakes and left the
 		# Kindle on the home screen for 10 min each time; now it always goes back to sleep.
-		# Give powerd at least 15 s after "suspending" (and the power-button event 3 s).
-		if [ "${last_susp}" -gt 0 ] && [ $((now - last_susp)) -ge 0 ] && [ $((now - last_susp)) -lt 15 ]; then
-			sleep $((15 - (now - last_susp)))
+		# Give powerd at least 15 s after "suspending" (and the power-button event 3 s),
+		# except after a failed hibernate: that one is recognised for sure, so light off
+		# and straight back to sleep.
+		sleep 1   # armer.sh writes its suspending/wake notes at about the same moment
+		_fh=0
+		failed_hibernate_wake && _fh=1
+		if [ "${_fh}" = "1" ]; then
+			fl_apply
+			sleep 2
+		else
+			if [ "${last_susp}" -gt 0 ] && [ $((now - last_susp)) -ge 0 ] && [ $((now - last_susp)) -lt 15 ]; then
+				sleep $((15 - (now - last_susp)))
+			fi
+			sleep 3
 		fi
-		sleep 3
 		st="$(powerd_state)"
-		if user_exit_recent 20; then
+		if [ "${_fh}" = "0" ] && user_exit_recent 20; then
 			_uarg="$(cat "${PF_USEREXIT}.arg" 2>/dev/null)"
 			shown=0
 			resleep=0
@@ -277,7 +301,8 @@ while :; do
 			diag_powerd_status
 			diag_syslog
 			diag_dmesg
-			log "woke up on its own (state '${st}', no power button, ${_since}): pressing power to go back to the sleep screen"
+			log "woke up on its own (state '${st}', no power button, ${_since}$( [ "${_fh}" = "1" ] && echo ', failed hibernate')): pressing power to go back to the sleep screen"
+			fl_apply
 			resleep=1
 			lipc-set-prop -i com.lab126.powerd powerButton 1 >/dev/null 2>&1
 			sleep $((SS_DELAY + 2))
@@ -290,6 +315,7 @@ while :; do
 				# is waiting while we sleep here), so paint the photo over the stock screen now.
 				redraw_current
 				fl_off_in_ss
+				fl_apply
 			else
 				resleep_fail=$((resleep_fail + 1))
 				log "still '${st}' after pressing power (${resleep_fail}/5)"

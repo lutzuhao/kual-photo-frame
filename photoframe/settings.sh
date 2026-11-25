@@ -30,6 +30,12 @@ TOUCH_DEV=
 LOW_BATTERY=8
 # Takeover mode: 1 = switch the front light off while the slideshow runs (restored on exit). 0 = leave it.
 FRONTLIGHT_OFF=1
+# Sleep-screen mode: front light level kept while the frame runs: 0 = off (default), 1-24 = that level,
+# -1 = do not touch the light. The level you had before is restored when you press Stop.
+FRONTLIGHT_LEVEL=0
+# Sleep-screen mode: 1 = switch the cover/magnet (hall) sensor off while the frame runs so a magnet or
+# case cannot wake the Kindle (restored on Stop). Only if the Kindle has such a sensor (Oasis). 0 = leave it.
+HALL_OFF=1
 # Sleep-screen mode: seconds to wait for the Kindle to draw its own sleep screen before drawing the photo over it.
 SS_DELAY=3
 

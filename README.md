@@ -122,6 +122,7 @@ To view a rotated landscape photo upright, turn the Kindle 90 degrees clockwise 
 - **Wi-Fi was on and is now off:** sleep-screen mode turns it off while a photo is up; waking the Kindle or pressing Stop should restore it.
 - **Stock sleep cover flashes first:** wait the few seconds set by `SS_DELAY` (default 3).
 - **FBInk warnings in the log:** install the KindleModding hotfix or KOReader so dithered draws are available; `eips` still works as a fallback.
+- **Front light and magnet wake (sleep-screen mode):** while the frame runs the front light is kept at `FRONTLIGHT_LEVEL` (default 0 = off) and the cover/magnet (hall) sensor is switched off (`HALL_OFF=1`, Oasis only: `hall_enable` in sysfs, the same switch KOReader uses for "ignore cover events"). **Stop** puts both back. If the Kindle wakes by itself after a failed hibernate (`suspending "disk"`, outOfScreenSaver without a real button press) the frame turns the light off and goes back to the sleep screen instead of exiting to the home screen.
 - **Stuck screen:** hold the power button for about 20 seconds.
 
 ## Disclaimer

@@ -74,17 +74,32 @@ while alive; do
 	t0="$(date +%s)"
 	# outOfScreenSaver and wakeupFromSuspend are recorded here too, because this continuous
 	# monitor never misses events while sleepd.sh is restarting lipc-wait-event or logging.
-	lipc-wait-event -m com.lab126.powerd readyToSuspend,outOfScreenSaver,wakeupFromSuspend 2>/dev/null | while read -r ev rest; do
+	lipc-wait-event -m com.lab126.powerd readyToSuspend,outOfScreenSaver,wakeupFromSuspend,suspending 2>/dev/null | while read -r ev rest; do
 		alive || exit 0
 		case "${ev}" in
 			readyToSuspend*) counter_inc rts; echo "${rest}" >"${PF_CNT}.rtsarg"; arm ;;
+			suspending*)
+				# Remember what powerd is about to do ("mem" or "disk"); see failed_hibernate_wake.
+				echo "$(date +%s) ${rest}" >"${PF_SUSP}"
+				;;
 			outOfScreenSaver*)
-				date +%s >"${PF_USEREXIT}"
-				echo "${rest}" >"${PF_USEREXIT}.arg"
-				log "armer: outOfScreenSaver ${rest} (state $(powerd_state))"
+				if failed_hibernate_wake; then
+					# Not a power button: the hibernate attempt failed. Light off at once; sleepd.sh
+					# sends the Kindle back to the sleep screen.
+					rm -f "${PF_USEREXIT}"
+					fl_apply
+					hall_off_apply
+					log "armer: outOfScreenSaver ${rest} (state $(powerd_state)) right after a failed 'suspending disk', NOT a power button; front light now $(fl_status)"
+				else
+					date +%s >"${PF_USEREXIT}"
+					echo "${rest}" >"${PF_USEREXIT}.arg"
+					log "armer: outOfScreenSaver ${rest} (state $(powerd_state))"
+				fi
 				;;
 			wakeupFromSuspend*)
+				echo "$(date +%s) ${rest}" >"${PF_WAKE}"
 				mark_awake
+				hall_off_apply
 				log "armer: wakeupFromSuspend ${rest} (state $(powerd_state))"
 				;;
 		esac

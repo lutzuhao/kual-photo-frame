@@ -20,6 +20,8 @@ PF_DUEFILE="${PF_TMP}/photoframe.due"
 PF_RAMLOG="${PF_TMP}/photoframe.log"
 # armer.sh writes the time of the last outOfScreenSaver (power button) here.
 PF_USEREXIT="${PF_TMP}/photoframe.userexit"
+PF_SUSP="${PF_TMP}/photoframe.susp"   # "epoch kind" of the last suspending event (armer)
+PF_WAKE="${PF_TMP}/photoframe.wake"   # "epoch seconds" of the last wakeupFromSuspend (armer)
 PF_FBINK="${PF_TMP}/pf_fbink"
 PF_AWAKEFILE="${PF_TMP}/photoframe.awake"
 PF_WIFIFILE="${PF_TMP}/photoframe.wifi"
@@ -66,6 +68,8 @@ load_settings() {
 	TOUCH_DEV=
 	LOW_BATTERY=8
 	FRONTLIGHT_OFF=1
+	FRONTLIGHT_LEVEL=0
+	HALL_OFF=1
 	SS_DELAY=3
 	SHOW_BATTERY=1
 	QUIET_HOURS=1
@@ -84,6 +88,10 @@ load_settings() {
 	TAP_LIGHT_LEVEL="$(norm_int "${TAP_LIGHT_LEVEL}" 0)"
 	LOW_BATTERY="$(norm_int "${LOW_BATTERY}" 8)"
 	SS_DELAY="$(norm_int "${SS_DELAY}" 3)"
+	# Sleep-screen mode: front light level kept while the frame runs (0 = off, 1-24, -1 = do not touch).
+	case "${FRONTLIGHT_LEVEL}" in -1) ;; ''|*[!0-9]*) FRONTLIGHT_LEVEL=0 ;; esac
+	[ "${FRONTLIGHT_LEVEL}" -gt 24 ] && FRONTLIGHT_LEVEL=24
+	case "${HALL_OFF}" in 0) ;; *) HALL_OFF=1 ;; esac
 	case "${SHOW_BATTERY}" in 1) ;; *) SHOW_BATTERY=0 ;; esac
 	case "${QUIET_HOURS}" in 1) ;; *) QUIET_HOURS=0 ;; esac
 	QUIET_START="$(norm_int "${QUIET_START}" 23)"
@@ -696,6 +704,126 @@ fl_off_in_ss() {
 	done
 }
 
+# ---------------------------------------------------------------------------
+# Front light lock (sleep-screen mode): keep the light at FRONTLIGHT_LEVEL while the frame runs
+# and give the user's own level back on Stop. The level before the first start is saved in
+# state/fl_prev.txt (not overwritten by a second start, so a crash cannot lose it).
+# ---------------------------------------------------------------------------
+PF_SYSROOT="${PF_SYSROOT:-}"   # empty on the Kindle; only the test harness sets it
+PF_FLPREV="${PF_STATE}/fl_prev.txt"
+PF_HALLPREV="${PF_STATE}/hall_prev.txt"
+
+fl_apply() {
+	[ "${FRONTLIGHT_LEVEL}" -ge 0 ] 2>/dev/null || return 0
+	_cur="$(lipc-get-prop com.lab126.powerd flIntensity 2>/dev/null)"
+	[ "${_cur}" = "${FRONTLIGHT_LEVEL}" ] || lipc-set-prop -i com.lab126.powerd flIntensity "${FRONTLIGHT_LEVEL}" >/dev/null 2>&1
+	if [ "${FRONTLIGHT_LEVEL}" = "0" ]; then
+		# lipc level 0 still leaves the LED at hardware level 1 on some firmwares: really switch it off
+		for _b in "${PF_SYSROOT}"/sys/class/backlight/*; do
+			[ -w "${_b}/brightness" ] || continue
+			case "$(cat "${_b}/actual_brightness" 2>/dev/null)" in ''|0) ;; *) echo 0 >"${_b}/brightness" 2>/dev/null ;; esac
+		done
+	fi
+}
+
+fl_lock_start() {
+	[ "${FRONTLIGHT_LEVEL}" -ge 0 ] 2>/dev/null || return 0
+	_was="$(lipc-get-prop com.lab126.powerd flIntensity 2>/dev/null)"
+	case "${_was}" in ''|*[!0-9]*) log "front light: cannot read the current level, not touching it"; return 0 ;; esac
+	if [ ! -s "${PF_FLPREV}" ]; then
+		echo "${_was}" >"${PF_FLPREV}"
+	fi
+	fl_apply
+	log "front light: was ${_was}, kept at ${FRONTLIGHT_LEVEL} while the frame runs (saved level $(cat "${PF_FLPREV}" 2>/dev/null)); now $(fl_status)"
+}
+
+fl_lock_restore() {
+	[ -s "${PF_FLPREV}" ] || return 0
+	_prev="$(cat "${PF_FLPREV}" 2>/dev/null)"
+	case "${_prev}" in ''|*[!0-9]*) rm -f "${PF_FLPREV}"; return 0 ;; esac
+	lipc-set-prop -i com.lab126.powerd flIntensity "${_prev}" >/dev/null 2>&1
+	rm -f "${PF_FLPREV}"
+	log "front light: restored to ${_prev} (now $(fl_status))"
+}
+
+# ---------------------------------------------------------------------------
+# Hall sensor (cover / magnet) wake switch. KOReader switches the same file for its
+# "ignore cover events" option: /sys/devices/system/wario_hall/wario_hall0/hall_enable on the
+# Oasis 1 (1 = sensor on, 0 = off). The file is looked up at run time; if there is none
+# (PW1 has no cover sensor) nothing is touched. The sysfs value is lost on reboot anyway.
+# ---------------------------------------------------------------------------
+hall_path() {
+	for _h in "${PF_SYSROOT}"/sys/devices/system/*hall*/*/hall_enable "${PF_SYSROOT}"/sys/devices/platform/*hall*/hall_enable "${PF_SYSROOT}"/sys/bus/platform/drivers/hall_sensor/*/hall_enable; do
+		[ -f "${_h}" ] && [ -w "${_h}" ] && { echo "${_h}"; return 0; }
+	done
+	return 1
+}
+
+hall_status() {
+	_hp="$(hall_path)" || { echo none; return; }
+	echo "$(cat "${_hp}" 2>/dev/null)/det$(cat "${_hp%/*}/hall_detect" 2>/dev/null)"
+}
+
+# Make sure the sensor is off (cheap; also called after every wake in case powerd switched it back on).
+hall_off_apply() {
+	[ "${HALL_OFF}" = "1" ] || return 0
+	_hp="$(hall_path)" || return 1
+	_v="$(cat "${_hp}" 2>/dev/null)"
+	[ "${_v}" = "0" ] && return 0
+	echo 0 >"${_hp}" 2>/dev/null
+	log "hall sensor: ${_hp##/sys/} was '${_v}', wrote 0, now '$(cat "${_hp}" 2>/dev/null)'"
+}
+
+hall_off_start() {
+	[ "${HALL_OFF}" = "1" ] || { log "hall sensor: left alone (HALL_OFF=0)"; return 0; }
+	_hp="$(hall_path)" || { log "hall sensor: no hall_enable file on this Kindle, magnet wake not changed"; return 0; }
+	_v="$(cat "${_hp}" 2>/dev/null)"
+	case "${_v}" in
+		0|1) ;;
+		*) log "hall sensor: unexpected value '${_v}' in ${_hp##/sys/}, not touching it"; return 0 ;;
+	esac
+	[ -s "${PF_HALLPREV}" ] || echo "${_v}" >"${PF_HALLPREV}"
+	hall_off_apply
+	_now="OFF"
+	[ "$(cat "${_hp}" 2>/dev/null)" = "0" ] || _now="STILL ON (the write did not stick)"
+	log "hall sensor: ${_hp##/sys/} was ${_v}; magnet/cover wake is now ${_now} ($(hall_status))"
+}
+
+hall_off_restore() {
+	[ -s "${PF_HALLPREV}" ] || return 0
+	_prev="$(cat "${PF_HALLPREV}" 2>/dev/null)"
+	_hp="$(hall_path)" || { rm -f "${PF_HALLPREV}"; return 0; }
+	case "${_prev}" in 0|1) echo "${_prev}" >"${_hp}" 2>/dev/null ;; esac
+	rm -f "${PF_HALLPREV}"
+	log "hall sensor: restored to ${_prev} (now $(hall_status))"
+}
+
+# ---------------------------------------------------------------------------
+# Failed hibernate. About an hour into the sleep powerd tries 'suspending "disk"' and on the
+# Oasis (FW 5.9.7) that attempt ends after 1-4 minutes with the Kindle awake on the home screen
+# and an outOfScreenSaver 1 event, although nobody touched it. Signature: the last suspending
+# event was "disk", it is at most 30 s old, and wakeupFromSuspend reported <= 900 s asleep.
+# Charging is a real user action (USB plugged in), never a failed hibernate.
+# armer.sh records PF_SUSP / PF_WAKE for every event.
+# ---------------------------------------------------------------------------
+failed_hibernate_wake() {
+	_s="$(cat "${PF_SUSP}" 2>/dev/null)"
+	_w="$(cat "${PF_WAKE}" 2>/dev/null)"
+	set -- ${_s}
+	_se="$1"; _sk="$2"
+	case "${_se}" in ''|*[!0-9]*) return 1 ;; esac
+	case "${_sk}" in *disk*) ;; *) return 1 ;; esac
+	[ $(( $(date +%s) - _se )) -le 30 ] || return 1
+	set -- ${_w}
+	_we="$1"; _wn="$2"
+	case "${_we}" in ''|*[!0-9]*) return 1 ;; esac
+	case "${_wn}" in ''|*[!0-9]*) return 1 ;; esac
+	[ "${_we}" -ge $((_se - 2)) ] || return 1
+	[ "${_wn}" -le 900 ] || return 1
+	is_charging && return 1
+	return 0
+}
+
 # Voltage (mV), load current (mA), and remaining capacity (mAh) from gasgauge-info.
 _gg_num() {
 	gasgauge-info "$1" 2>/dev/null | awk 'NR==1{for(i=1;i<=NF;i++) if($i ~ /^-?[0-9]+$/){print $i; exit}}'
@@ -758,7 +886,7 @@ diag_point() {
 		*[!0-9]*|'') ;;
 		*) set -- "$@" "| run: wall $((_now - _sw))s awake $((_mono - _sm))s" ;;
 	esac
-	diag "$(pf_ts) [mono ${_mono}] $* | ${_d} | rts $(counter_take rts) rtc $(counter_take rtcset)/$(counter_take rtcfail) rtsarg $(cat "${PF_CNT}.rtsarg" 2>/dev/null) | bat $(batt_diag) chg $(lipc-get-prop com.lab126.powerd isCharging 2>/dev/null) | state $(powerd_state) | fl $(fl_status) | wifi $(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null) | irq $(irq_diff)"
+	diag "$(pf_ts) [mono ${_mono}] $* | ${_d} | rts $(counter_take rts) rtc $(counter_take rtcset)/$(counter_take rtcfail) rtsarg $(cat "${PF_CNT}.rtsarg" 2>/dev/null) | bat $(batt_diag) chg $(lipc-get-prop com.lab126.powerd isCharging 2>/dev/null) | state $(powerd_state) | fl $(fl_status) | hall $(hall_status) | wifi $(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null) | irq $(irq_diff)"
 }
 
 # Full powerd status on one line (wake points only; it is ~20 short lines).
@@ -813,7 +941,8 @@ diag_static() {
 	if have sqlite3 && [ -r /var/local/appreg.db ]; then
 		sqlite3 /var/local/appreg.db "SELECT handlerId,name,value FROM properties WHERE name LIKE '%hibernate%' OR name LIKE '%suspend%';" 2>/dev/null | pf_sanitize | sed 's/^/  appreg: /' >>"${PF_RAMDIAG}"
 	fi
-	diag "  backlight: $(ls /sys/class/backlight 2>/dev/null | tr '\n' ' ') fl $(fl_status)"
+	diag "  backlight: $(ls /sys/class/backlight 2>/dev/null | tr '\n' ' ') fl $(fl_status)  fl lock level ${FRONTLIGHT_LEVEL} (saved $(cat "${PF_FLPREV}" 2>/dev/null))"
+	diag "  hall: file $(hall_path 2>/dev/null || echo none) status $(hall_status) HALL_OFF=${HALL_OFF} (saved $(cat "${PF_HALLPREV}" 2>/dev/null)); hall files: $(ls /sys/devices/system/*hall*/*/ /sys/devices/platform/*hall*/ 2>/dev/null | tr '\n' ' ')"
 	cat /proc/interrupts 2>/dev/null | pf_sanitize | sed 's/^/  irq-start: /' >>"${PF_RAMDIAG}"
 	irq_diff 2>>"${PF_RAMDIAG}" >/dev/null
 	# Start pointer for diag_syslog: include the last 300 lines of history once.

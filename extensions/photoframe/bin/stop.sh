@@ -25,6 +25,11 @@ if [ -f "${PF_STATE}/restore.sh" ]; then
 	[ "${WIFI_WAS}" = "1" ] && lipc-set-prop -i com.lab126.cmd wirelessEnable 1 >/dev/null 2>&1
 	rm -f "${PF_STATE}/restore.sh"
 fi
+# Sleep-screen mode: give back the user's front light level and the magnet/cover sensor.
+# (After restore.sh on purpose: takeover mode would otherwise restore our own locked level.)
+fl_lock_restore
+hall_off_restore
+rm -f "${PF_SUSP}" "${PF_WAKE}" "${PF_USEREXIT}"
 # If the GUI is not running (e.g. stopped from SSH), bring it back.
 if ! pidof cvm >/dev/null 2>&1; then
 	cd /
